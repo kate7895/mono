@@ -1,0 +1,151 @@
+import os
+import zipfile
+
+zip_ref = zipfile.ZipFile('train.zip', 'r')
+zip_ref.extractall('train')
+zip_ref = zipfile.ZipFile('validation.zip', 'r')
+zip_ref.extractall('validation')
+zip_ref.close()
+
+train_bb_dir = os.path.join('/content/train/train_bigben_tower')
+train_et_dir = os.path.join('/content/train/train_eiffel_tower')
+train_sl_dir = os.path.join('/content/train/train_statue_of_liberty')
+
+validation_bb_dir = os.path.join('/content/validation/validation_bigben_tower')
+validation_et_dir = os.path.join('/content/validation/validation_eiffel_tower')
+validation_sl_dir = os.path.join('/content/validation/validation_statue_of_liberty')
+
+train_bb_names = os.listdir(train_bb_dir)
+train_et_names = os.listdir(train_et_dir)
+train_sl_names = os.listdir(train_sl_dir)
+
+validation_bb_names = os.listdir(validation_bb_dir)
+validation_et_names = os.listdir(validation_et_dir)
+validation_sl_names = os.listdir(validation_sl_dir)
+
+import tensorflow as tf
+
+model = tf.keras.models.Sequential([
+    tf.keras.layers.Conv2D(16, (3,3), activation='relu', input_shape=(150, 150, 3)),
+    tf.keras.layers.MaxPooling2D(2, 2),
+    tf.keras.layers.Conv2D(32, (3,3), activation='relu'),
+    tf.keras.layers.MaxPooling2D(2,2),
+    tf.keras.layers.Conv2D(64, (3,3), activation='relu'),
+    tf.keras.layers.MaxPooling2D(2,2),
+    tf.keras.layers.Conv2D(128, (3,3), activation='relu'),
+    tf.keras.layers.MaxPooling2D(2,2),
+    tf.keras.layers.Conv2D(256, (3,3), activation='relu'),
+    tf.keras.layers.MaxPooling2D(2,2),
+    tf.keras.layers.Flatten(),
+    tf.keras.layers.Dense(512, activation='relu'),
+    tf.keras.layers.Dense(3, activation=tf.nn.softmax)
+])
+
+model.summary()
+
+import matplotlib.pyplot as plt
+import numpy as np
+import random
+from tensorflow.keras.preprocessing.image import img_to_array, load_img
+successive_outputs = [layer.output for layer in model.layers[1:]]
+visualization_model = tf.keras.models.Model(inputs = model.input, outputs = successive_outputs)
+bb_img_files = [os.path.join(train_bb_dir, f) for f in train_bb_names]
+et_img_files = [os.path.join(train_et_dir, f) for f in train_et_names]
+sl_img_files = [os.path.join(train_sl_dir, f) for f in train_sl_names]
+img_path = random.choice(bb_img_files + et_img_files + sl_img_files )
+img = load_img(img_path, target_size=(150, 150))
+x = img_to_array(img)
+x = x.reshape((1,) + x.shape)
+x /= 255
+successive_feature_maps = visualization_model.predict(x)
+layer_names = [layer.name for layer in model.layers]
+for layer_name, feature_map in zip(layer_names, successive_feature_maps):
+  if len(feature_map.shape) == 4:
+    n_features = feature_map.shape[-1]
+    size = feature_map.shape[1]
+    display_grid = np.zeros((size, size * n_features))
+    for i in range(n_features):
+      x = feature_map[0, :, :, i]
+      x -= x.mean()
+      x /= x.std()
+      x *= 64
+      x += 128
+      x = np.clip(x, 0, 255).astype('uint8')
+      display_grid[:, i * size : (i + 1) * size] = x
+    scale = 20. / n_features
+    plt.figure(figsize=(scale * n_features, scale))
+    plt.title(layer_name)
+    plt.grid(False)
+    plt.imshow(display_grid, aspect='auto', cmap='viridis')
+
+from tensorflow.keras.optimizers import RMSprop
+
+model.compile(loss='mean_squared_error',
+              optimizer=RMSprop(lr=0.001),
+              metrics=['accuracy'])
+
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+
+train_datagen = ImageDataGenerator(rescale=1/255)
+validation_datagen = ImageDataGenerator(rescale=1/255)
+
+train_generator = train_datagen.flow_from_directory(
+        '/content/train',
+        target_size=(150, 150),
+        batch_size=128,
+        class_mode='categorical')
+
+validation_generator = validation_datagen.flow_from_directory(
+        '/content/validation',
+        target_size=(150, 150),
+        batch_size=32,
+        class_mode='categorical')
+
+class myCallback(tf.keras.callbacks.Callback):
+  def on_epoch_end(self,epoch,logs={}):
+    if(logs.get('accuracy')>0.99):
+      print('The accuracy of training is more than 99%, so cancelling training')
+      self.model.stop_training = True
+callbacks=myCallback()
+
+history = model.fit(
+      train_generator,
+      steps_per_epoch=8,  
+      epochs=30,
+      callbacks = [callbacks],
+      verbose=1,
+      validation_data = validation_generator,
+      validation_steps=8
+      )
+
+import numpy as np
+from google.colab import files
+from keras.preprocessing import image
+import IPython.display as display
+from PIL import Image
+
+uploaded = files.upload()
+
+for fn in uploaded.keys():
+ 
+  path = '/content/' + fn
+  img = image.load_img(path, target_size=(150, 150))
+  x = image.img_to_array(img)
+  x = np.expand_dims(x, axis=0)
+
+  images = np.vstack([x])
+  classes = model.predict(images, batch_size=10)
+  print(classes[0])
+ 
+  if classes[0][0]>=0.5:
+    image_path = fn
+    display.display(Image.open(image_path))
+    print (fn + " is the Big Ben Tower")
+  elif classes[0][1]>=0.5:
+    image_path = fn
+    display.display(Image.open(image_path))
+    print (fn + " is the Effiel Tower")
+  elif classes[0][2]>=0.5:
+    image_path = fn
+    display.display(Image.open(image_path))
+    print (fn + " is the Statue of Liberty")
